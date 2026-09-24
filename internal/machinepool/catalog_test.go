@@ -11,14 +11,15 @@ import (
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/blaxel"
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/daytona"
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/modal"
+	"github.com/omnara-ai/omnara/internal/machinepool/providers/tenki"
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/unikraft"
 	"github.com/omnara-ai/omnara/internal/storage/executionstore"
 )
 
 func TestDefaultCatalogProviders(t *testing.T) {
 	catalog := DefaultCatalog()
-	if len(catalog.definitions) != 4 {
-		t.Fatalf("default catalog providers = %d, want 4", len(catalog.definitions))
+	if len(catalog.definitions) != 5 {
+		t.Fatalf("default catalog providers = %d, want 5", len(catalog.definitions))
 	}
 	for _, test := range []struct {
 		name       string
@@ -27,6 +28,7 @@ func TestDefaultCatalogProviders(t *testing.T) {
 		{name: "blaxel", definition: blaxel.Definition{}},
 		{name: "daytona", definition: daytona.Definition{}},
 		{name: "modal", definition: modal.Definition{}},
+		{name: "tenki", definition: tenki.Definition{}},
 		{name: "unikraft", definition: unikraft.Definition{}},
 	} {
 		definition, ok := catalog.definition(test.name)
@@ -111,5 +113,27 @@ func assertJSONEqual(t *testing.T, got, want json.RawMessage) {
 	}
 	if diff := cmp.Diff(wantValue, gotValue); diff != "" {
 		t.Fatalf("JSON value mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestCatalogConfigurableMachineResources(t *testing.T) {
+	for _, test := range []struct {
+		provider    string
+		cpu, memory bool
+	}{
+		{"unikraft", true, true}, {"modal", true, true}, {"blaxel", false, true}, {"daytona", false, false},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			got, err := DefaultCatalog().ConfigurableMachineResources(test.provider)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.CPU != test.cpu || got.MemoryMB != test.memory {
+				t.Fatalf("sizing support = %+v", got)
+			}
+		})
+	}
+	if _, err := DefaultCatalog().ConfigurableMachineResources("unknown"); err == nil {
+		t.Fatal("unknown provider accepted")
 	}
 }

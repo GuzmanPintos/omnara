@@ -35,6 +35,7 @@ INTEGRATION_HTTPAPI_PACKAGES := \
 	./internal/httpapi \
 	./internal/httpapi/auth
 INTEGRATION_RUNTIME_PACKAGES := \
+	./internal/maintenance \
 	./internal/harness/kernel \
 	./internal/harness/tools \
 	./internal/harness/worker \
@@ -68,7 +69,7 @@ LOAD_DOTENV = set -a; [ ! -f .env ] || . ./.env; set +a
 	test-service-e2e \
 	web-install web-generate web-generate-check build-web build-api build-api-from-dist build-omnarad web-lint web-doctor web-check web-check-all web-e2e run-web \
 	test-live-web test-live-openai-responses test-live-openai-chat-completions test-live-openrouter test-live-anthropic \
-	test-live-api-format-switching test-live-sandbox-providers test-live \
+	test-live-api-format-switching test-live-sandbox-providers test-live-tenki-provider test-live-tenki-e2e test-live \
 	docs-openapi docs-openapi-check
 
 help:
@@ -331,8 +332,8 @@ tagged-packages-check:
 		$(GO) test -c -tags=blackbox -o "$$tmp_dir/blackbox.test" ./internal/blackbox
 
 db-up:
-	POSTGRES_HOST_PORT=$(POSTGRES_HOST_PORT) REDIS_HOST_PORT=$(REDIS_HOST_PORT) docker compose up -d --wait postgres redis minio
-	docker compose run --rm minio-init
+	POSTGRES_HOST_PORT=$(POSTGRES_HOST_PORT) REDIS_HOST_PORT=$(REDIS_HOST_PORT) docker compose up -d --wait postgres redis rustfs
+	docker compose run --rm rustfs-init
 
 db-down:
 	docker compose down
@@ -452,6 +453,7 @@ test-live-openai-responses:
 	@$(LOAD_DOTENV); \
 	: "$${OPENAI_API_KEY:?OPENAI_API_KEY is required for live OpenAI Responses tests}"; \
 	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLivePromptCache/openai_responses$$' && \
+	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLiveDeferredToolsLoadAfterSearch/openai_responses' && \
 	$(SERVICE_E2E_ENV) $(GO) test -count=1 -v -timeout=25m -tags='integration servicee2e live' ./internal/e2e -run '^TestServiceE2ELiveOpenAIResponses(ModelTurn|CompactionRecall|DockerDaemonProcessTools)$$' && \
 	$(TEST_DB_ENV) $(GO) test -count=1 -v -tags='integration live' ./internal/compaction -run '^TestRunnerLiveOpenAIResponsesCompactionCreatesCheckpoint$$'
 
@@ -459,6 +461,7 @@ test-live-openai-chat-completions:
 	@$(LOAD_DOTENV); \
 	: "$${OPENAI_API_KEY:?OPENAI_API_KEY is required for live OpenAI Chat Completions tests}"; \
 	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLivePromptCache/openai_chat$$' && \
+	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLiveDeferredToolsLoadAfterSearch/openai_chat' && \
 	$(GO) test -count=1 -v -tags=live ./internal/model/openaichatcompletions -run '^TestLiveOpenAIChatCompletionsText$$' && \
 	$(SERVICE_E2E_ENV) $(GO) test -count=1 -v -timeout=25m -tags='integration servicee2e live' ./internal/e2e -run '^TestServiceE2ELiveOpenAIChatCompletions(ModelTurn|CompactionRecall|DockerDaemonProcessTools)$$' && \
 	$(TEST_DB_ENV) $(GO) test -count=1 -v -tags='integration live' ./internal/compaction -run '^TestRunnerLiveOpenAIChatCompletionsCompactionCreatesCheckpoint$$'
@@ -467,6 +470,7 @@ test-live-openrouter:
 	@$(LOAD_DOTENV); \
 	: "$${OPENROUTER_API_KEY:?OPENROUTER_API_KEY is required for live OpenRouter tests}"; \
 	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLivePromptCache/openrouter_.*$$' && \
+	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLiveDeferredToolsLoadAfterSearch/openrouter_' && \
 	$(GO) test -count=1 -v -tags=live ./internal/model/openaichatcompletions -run '^TestLiveOpenRouterChatCompletions' && \
 	$(SERVICE_E2E_ENV) $(GO) test -count=1 -v -timeout=25m -tags='integration servicee2e live' ./internal/e2e -run '^TestServiceE2ELiveOpenRouter(ModelTurn|CompactionRecall|DockerDaemonProcessTools)$$' && \
 	$(TEST_DB_ENV) $(GO) test -count=1 -v -tags='integration live' ./internal/compaction -run '^TestRunnerLiveOpenRouterCompactionCreatesCheckpoint$$'
@@ -475,6 +479,7 @@ test-live-anthropic:
 	@$(LOAD_DOTENV); \
 	: "$${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required for live Anthropic tests}"; \
 	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLivePromptCache/anthropic$$' && \
+	$(GO) test -count=1 -v -tags=live ./internal/model -run '^TestLiveDeferredToolsLoadAfterSearch/anthropic' && \
 	$(SERVICE_E2E_ENV) $(GO) test -count=1 -v -timeout=25m -tags='integration servicee2e live' ./internal/e2e -run '^TestServiceE2ELiveAnthropic(ModelTurn|CompactionRecall|DockerDaemonProcessTools)$$' && \
 	$(TEST_DB_ENV) $(GO) test -count=1 -v -tags='integration live' ./internal/compaction -run '^TestRunnerLiveAnthropicCompactionCreatesCheckpoint$$'
 
@@ -491,8 +496,20 @@ test-live-sandbox-providers:
 		./internal/machinepool/providers/blaxel \
 		./internal/machinepool/providers/daytona \
 		./internal/machinepool/providers/modal \
+		./internal/machinepool/providers/tenki \
 		./internal/machinepool/providers/unikraft \
-		-run '^Test(Blaxel|Daytona|Modal|Unikraft)ProviderLiveSmoke$$'
+		-run '^Test(Blaxel|Daytona|Modal|Tenki|Unikraft)ProviderLiveSmoke$$'
+
+test-live-tenki-provider: ## Run the real Tenki provider lifecycle test
+	@$(LOAD_DOTENV); \
+	: "$${TENKI_API_KEY:?TENKI_API_KEY is required}"; \
+	OMNARA_REQUIRE_TENKI_LIVE=1 $(GO) test -count=1 -v -timeout=8m ./internal/machinepool/providers/tenki -run '^TestTenkiProviderLiveSmoke$$'
+
+test-live-tenki-e2e: ## Run Omnara services and the branch daemon against a real Tenki VM (requires cloudflared)
+	@$(LOAD_DOTENV); \
+	: "$${TENKI_API_KEY:?TENKI_API_KEY is required}"; \
+	command -v cloudflared >/dev/null || { echo 'cloudflared is required'; exit 1; }; \
+	OMNARA_REQUIRE_TENKI_LIVE=1 $(SERVICE_E2E_ENV) $(GO) test -count=1 -v -timeout=20m -tags='integration servicee2e live' ./internal/e2e -run '^TestServiceE2ELiveTenki$$'
 
 test-live: test-live-web test-live-openai-responses test-live-openai-chat-completions test-live-openrouter test-live-anthropic test-live-api-format-switching test-live-sandbox-providers
 
