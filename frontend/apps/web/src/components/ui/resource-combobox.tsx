@@ -9,6 +9,7 @@ import {
   type ResourceComboboxConfig,
   useResourceComboboxRootProps,
 } from '@/components/ui/resource-combobox-core'
+import { cn } from '@/lib/utils'
 
 export type {
   ResourceComboboxQuery,
@@ -31,17 +32,20 @@ export function createResourceCombobox<TItem>(config: ResourceComboboxConfig<TIt
     action,
     clearable = true,
     triggerRef: externalTriggerRef,
+    triggerClassName,
   }: ResourceComboboxBaseProps<TItem> & {
     value: TItem | null
     onValueChange: (item: TItem | null) => void
     clearable?: boolean
     triggerRef?: RefObject<HTMLButtonElement | null>
+    triggerClassName?: string
   }) {
     const rootProps = useResourceComboboxRootProps(config, search, items, disabled)
     const localTriggerRef = useRef<HTMLButtonElement>(null)
     const triggerRef = externalTriggerRef ?? localTriggerRef
     const [open, setOpen] = useState(false)
     const canClear = clearable && value !== null
+    const label = value ? config.itemLabel(value) : placeholder
 
     return (
       <Combobox
@@ -58,7 +62,7 @@ export function createResourceCombobox<TItem>(config: ResourceComboboxConfig<TIt
             ref={triggerRef}
             id={id}
             aria-label={id ? undefined : config.placeholder}
-            className={canClear ? '[&>span]:pr-8' : undefined}
+            className={cn(canClear && '[&>span]:pr-8', triggerClassName)}
             onKeyDown={(event) => {
               if (
                 event.key.length !== 1 ||
@@ -74,7 +78,9 @@ export function createResourceCombobox<TItem>(config: ResourceComboboxConfig<TIt
               setOpen(true)
             }}
           >
-            <span className="truncate">{value ? config.itemLabel(value) : placeholder}</span>
+            <span key={label} className="truncate">
+              {label}
+            </span>
           </ComboboxTrigger>
           {canClear && (
             <Button

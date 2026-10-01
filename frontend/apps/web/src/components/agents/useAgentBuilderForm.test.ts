@@ -8,16 +8,19 @@ import {
   basicConfigValid,
   type BasicMcpServer,
   createBasicConfigSession,
-  mcpRuntimeToolNameError,
-  mcpServerNameError,
+  emptyBasicConfig,
   mcpToolEnabled,
   unexposableMcpTools,
 } from './useAgentBuilderForm'
 
 const fullConfig: BasicConfig = {
+  eventWebhookEvents: ['tool_call_update'],
+  eventWebhookUrl: '',
+  eventWebhookSigningSecretId: '',
   instruction: 'You are a research assistant.\n\nCite sources.',
   providerConfig: 'anthropic',
   modelName: 'claude-sonnet-5',
+  reasoningEffort: 'high',
   machineSources: [
     {
       id: 'source-1',
@@ -171,6 +174,45 @@ function applyToSource(source: string, config: BasicConfig): string {
 }
 
 describe('createBasicConfigSession initialDraft', () => {
+  it.each([
+    `mcp:
+  external:
+    url: https://example.com/mcp
+    tools: &toolConfig
+      web_search: {}
+tools: *toolConfig
+`,
+    `tools: &toolConfig
+  web_search: {}
+mcp:
+  external:
+    url: https://example.com/mcp
+    default_enabled: false
+    tools: *toolConfig
+`,
+    `tools:
+  run_command: &shared {}
+  web_search: *shared
+`,
+    `<<: {tools: {run_command: {enabled: false}}}
+`,
+  ])('keeps shared or merged YAML in YAML mode: %s', (tools) => {
+    const source = `${minimalYaml}machine_sources: [{machine_pool_name: pool}]\n${tools}`
+    const session = createBasicConfigSession(source)
+    expect(session.initialDraft).toBeNull()
+    expect(session.apply(fullConfig)).toBe(source)
+  })
+
+  it('does not serialize an unused builder draft for YAML-only source', () => {
+    const source = `tools: {run_command: {permission: {mode: &mode always_allow}}}
+instruction: *mode
+model: {provider_config: openai, name: primary}
+`
+    const session = createBasicConfigSession(source)
+    expect(session.initialDraft).toBeNull()
+    expect(session.apply(emptyBasicConfig)).toBe(source)
+  })
+
   it('round-trips a full builder-authored config', () => {
     const source = applyToSource('', fullConfig)
     const config = mustDeserialize(source)
@@ -229,29 +271,6 @@ describe('createBasicConfigSession initialDraft', () => {
       },
       max_subagents: 4,
       max_depth: 2,
-    })
-  })
-
-  it('keeps subagent model overrides authored in YAML', () => {
-    const source = `instruction: Do the thing.
-model:
-  provider_config: anthropic
-  name: claude-sonnet-5
-subagents:
-  fork:
-    type: self
-    model:
-      name: claude-haiku
-`
-    const config = mustDeserialize(source)
-    expect(config.subagents[0]?.modelOverride).toEqual({ name: 'claude-haiku' })
-    expect(applyToSource(source, config)).toBe(source)
-    const renamed = {
-      ...config,
-      subagents: config.subagents.map((subagent) => ({ ...subagent, description: 'Fork.' })),
-    }
-    expect(parse(applyToSource(source, renamed))).toMatchObject({
-      subagents: { fork: { type: 'self', description: 'Fork.', model: { name: 'claude-haiku' } } },
     })
   })
 
@@ -412,16 +431,6 @@ mcp:
     expect(applyToSource(source, config)).toBe(source)
   })
 
-  it('rejects disabled tools', () => {
-    const source = `${minimalYaml}tools:
-  shell:
-    enabled: false
-    permission:
-      mode: always_ask
-`
-    expect(deserialize(source)).toBeNull()
-  })
-
   it('rejects unknown fields inside builder-owned entries', () => {
     expect(
       deserialize(`${minimalYaml}tools:
@@ -485,6 +494,23 @@ mcp:
     expect(applyToSource(source, config)).toBe(source)
   })
 
+  it('infers a snapshot-only provider overlay as Daytona', () => {
+    const source = `${minimalYaml}machine_sources:
+  - machine_pool_name: "default-pool"
+    machine_provider_options_overlay: {"snapshot":"base-image"}
+`
+    const config = mustDeserialize(source)
+    expect(config.machineSources).toMatchObject([
+      {
+        kind: 'pool',
+        name: 'default-pool',
+        provider: 'daytona',
+        providerOptions: { resource: 'base-image' },
+      },
+    ])
+    expect(applyToSource(source, config)).toBe(source)
+  })
+
   it('rejects provider options overlays no provider accounts for', () => {
     const unknownKey = `${minimalYaml}machine_sources:
   - machine_pool_name: "default-pool"
@@ -521,11 +547,43 @@ mcp:
 })
 
 describe('createBasicConfigSession apply', () => {
+  it('writes and clears the model reasoning effort', () => {
+    const source = `instruction: Help.
+model:
+  provider_config: anthropic
+  name: claude-sonnet-5
+  cache_retention: long
+`
+    const draft = mustDeserialize(source)
+    expect(draft.reasoningEffort).toBe('')
+
+    const withEffort = applyToSource(source, { ...draft, reasoningEffort: 'high' })
+    expect(parse(withEffort)).toMatchObject({
+      model: {
+        provider_config: 'anthropic',
+        name: 'claude-sonnet-5',
+        cache_retention: 'long',
+        reasoning: { effort: 'high' },
+      },
+    })
+    expect(mustDeserialize(withEffort).reasoningEffort).toBe('high')
+
+    const cleared = applyToSource(withEffort, {
+      ...mustDeserialize(withEffort),
+      reasoningEffort: '',
+    })
+    expect(parse(cleared)).toEqual(parse(source))
+  })
+
   it('keeps an empty source empty for an untouched form', () => {
     const emptyConfig: BasicConfig = {
+      eventWebhookEvents: ['tool_call_update'],
+      eventWebhookUrl: '',
+      eventWebhookSigningSecretId: '',
       instruction: '',
       providerConfig: '',
       modelName: '',
+      reasoningEffort: '',
       machineSources: [],
       tools: [],
       mcpServers: [],
@@ -697,52 +755,6 @@ describe('basic agent config names', () => {
       index === 0 ? { ...server, name: ` ${server.name}` } : server,
     )
     expect(basicConfigValid({ ...fullConfig, mcpServers })).toBe(false)
-  })
-
-  it.each([
-    ['', 'Name is required.'],
-    [' github', 'Name must start with a letter.'],
-    ['1github', 'Name must start with a letter.'],
-    ['git_hub', 'Name may only contain letters, numbers, and hyphens.'],
-    ['a'.repeat(33), 'Name cannot exceed 32 characters.'],
-    ['github', undefined],
-    ['GitHub-2', undefined],
-  ])('reports the MCP server key rule for %j', (name, expected) => {
-    expect(mcpServerNameError(name)).toBe(expected)
-  })
-
-  it('explains when the prefixed MCP tool name exceeds the model limit', () => {
-    const tool = 'provider__search-call-recordings-by-metadata'
-    expect(mcpRuntimeToolNameError('cust-read', tool)).toBeUndefined()
-    expect(mcpRuntimeToolNameError('customer-user-read', tool)).toBe(
-      `"${tool}" becomes "mcp__customer-user-read__${tool}" (69 characters) once the server name is prefixed, ` +
-        'but the model only accepts tool names of 64 characters or fewer. ' +
-        'Shorten the server name to 13 characters or fewer.',
-    )
-    expect(mcpRuntimeToolNameError('a', 'b'.repeat(64))).toBe(
-      `"${'b'.repeat(64)}" becomes "mcp__a__${'b'.repeat(64)}" (72 characters) once the server name is prefixed, ` +
-        'but the model only accepts tool names of 64 characters or fewer. ' +
-        'The tool name itself is too long to expose under any server name.',
-    )
-  })
-
-  it.each([
-    ['', 'Tool name is required.'],
-    [
-      '1search',
-      '"1search" must start with a letter, but the model only accepts tool names that begin with a letter.',
-    ],
-    [
-      'search.issues',
-      '"search.issues" contains characters other than letters, numbers, underscores, and hyphens, which the model does not accept in tool names.',
-    ],
-    [
-      'search issues',
-      '"search issues" contains characters other than letters, numbers, underscores, and hyphens, which the model does not accept in tool names.',
-    ],
-    ['search_issues-v2', undefined],
-  ])('explains when the MCP tool name %j has characters the model rejects', (name, expected) => {
-    expect(mcpRuntimeToolNameError('github', name)).toBe(expected)
   })
 
   it('lists enabled discovered and configured MCP tools the model cannot accept', () => {

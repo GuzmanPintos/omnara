@@ -448,51 +448,6 @@ func TestPrepareRejectsToolsWhenModelDoesNotSupportTools(t *testing.T) {
 	}
 }
 
-func TestPrepareIncludesAvailableMachinePoolsInSystemContent(t *testing.T) {
-	client := Client{EndpointPath: testEndpointPath, ProviderModelSlug: "claude-test"}
-	prepared, err := client.Prepare(context.Background(), model.PrepareInput{
-		Context: modelcontext.Bundle{
-			SystemPrompt: "sys",
-			ToolSpecs:    []modelcontext.ToolSpec{{Name: toolcatalog.ToolNameCreateMachine}},
-			AvailableMachinePools: []modelcontext.MachinePoolRef{{
-				MachinePoolName: "Build Pool",
-				Description:     "Build workers",
-			}},
-		},
-		Policy: model.RequestPolicy{MaxOutputTokens: 64},
-	})
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	var payload map[string]json.RawMessage
-	if err := json.Unmarshal(prepared.Body, &payload); err != nil {
-		t.Fatalf("decode payload: %v", err)
-	}
-	system := string(payload["system"])
-	for _, want := range []string{"Available machine pools", "create_machine", "machine_pool_name", "Build Pool"} {
-		if !strings.Contains(system, want) {
-			t.Fatalf("machine pool content missing %q: %s", want, system)
-		}
-	}
-}
-
-func TestPrepareExplainsWhenCreateMachineHasNoAvailablePools(t *testing.T) {
-	client := Client{EndpointPath: testEndpointPath, ProviderModelSlug: "claude-test"}
-	prepared, err := client.Prepare(context.Background(), model.PrepareInput{
-		Context: modelcontext.Bundle{
-			SystemPrompt: "sys",
-			ToolSpecs:    []modelcontext.ToolSpec{{Name: toolcatalog.ToolNameCreateMachine}},
-		},
-		Policy: model.RequestPolicy{MaxOutputTokens: 64},
-	})
-	if err != nil {
-		t.Fatalf("prepare: %v", err)
-	}
-	if !strings.Contains(string(prepared.Body), "no machine pools are currently available") {
-		t.Fatalf("missing empty machine-pool context: %s", prepared.Body)
-	}
-}
-
 func TestPrepareMergesAPIVariantOptions(t *testing.T) {
 	client := Client{EndpointPath: testEndpointPath,
 		ProviderModelSlug: "claude-test",
@@ -689,6 +644,153 @@ func TestPrepareDoesNotEmitThinkingOption(t *testing.T) {
 	}
 	if _, ok := payload["thinking"]; ok {
 		t.Fatalf("Anthropic provider-specific thinking option leaked into neutral harness payload: %s", prepared.Body)
+	}
+}
+
+func TestPrepareSendsReasoningEffortAsOutputConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		apiVariantOptions string
+		supportsReasoning bool
+		effort            string
+		wantOutputConfig  string
+		wantThinking      string
+	}{
+		{
+			name:              "effort",
+			supportsReasoning: true,
+			effort:            "low",
+			wantOutputConfig:  `{"effort":"low"}`,
+			wantThinking:      `{"type":"adaptive"}`,
+		},
+		{
+			name:              "effort merges into api variant output config",
+			apiVariantOptions: `{"output_config":{"effort":"max","format":{"type":"json_schema"}}}`,
+			supportsReasoning: true,
+			effort:            "medium",
+			wantOutputConfig:  `{"effort":"medium","format":{"type":"json_schema"}}`,
+			wantThinking:      `{"type":"adaptive"}`,
+		},
+		{
+			name:              "api variant output config without effort",
+			apiVariantOptions: `{"output_config":{"effort":"max"}}`,
+			supportsReasoning: true,
+			wantOutputConfig:  `{"effort":"max"}`,
+		},
+		{
+			name:              "effort keeps api variant manual thinking",
+			apiVariantOptions: `{"thinking":{"type":"enabled","budget_tokens":2048}}`,
+			supportsReasoning: true,
+			effort:            "high",
+			wantOutputConfig:  `{"effort":"high"}`,
+			wantThinking:      `{"type":"enabled","budget_tokens":2048}`,
+		},
+		{
+			name:              "effort enables api variant disabled thinking",
+			apiVariantOptions: `{"thinking":{"type":"disabled"}}`,
+			supportsReasoning: true,
+			effort:            "high",
+			wantOutputConfig:  `{"effort":"high"}`,
+			wantThinking:      `{"type":"adaptive"}`,
+		},
+		{name: "reasoning unsupported", effort: "low"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client := Client{
+				EndpointPath:      testEndpointPath,
+				ProviderModelSlug: "claude-test",
+				APIVariantOptions: json.RawMessage(tc.apiVariantOptions),
+			}
+			supportsReasoning := tc.supportsReasoning
+			prepared, err := client.Prepare(context.Background(), model.PrepareInput{
+				Context: modelcontext.Bundle{
+					Messages: []modelcontext.Message{anthropicTextMessage(modelprotocol.RoleUser, "hi")},
+				},
+				Policy: model.RequestPolicy{
+					MaxOutputTokens:   4096,
+					SupportsReasoning: &supportsReasoning,
+					ReasoningEffort:   tc.effort,
+				},
+			})
+			if err != nil {
+				t.Fatalf("prepare: %v", err)
+			}
+			var payload map[string]json.RawMessage
+			if err := json.Unmarshal(prepared.Body, &payload); err != nil {
+				t.Fatalf("decode payload: %v", err)
+			}
+			if got := string(payload["output_config"]); got != tc.wantOutputConfig {
+				t.Fatalf("output_config = %s, want %s in %s", got, tc.wantOutputConfig, prepared.Body)
+			}
+			if got := string(payload["thinking"]); got != tc.wantThinking {
+				t.Fatalf("thinking = %s, want %s in %s", got, tc.wantThinking, prepared.Body)
+			}
+		})
+	}
+}
+
+func TestPrepareReasoningEffortKeepsOtherAPIVariantOptions(t *testing.T) {
+	client := Client{
+		EndpointPath:      testEndpointPath,
+		ProviderModelSlug: "claude-test",
+		APIVariantOptions: json.RawMessage(`{
+			"metadata":{"user_id":"user-1"},
+			"top_k":5,
+			"service_tier":"auto",
+			"thinking":{"type":"adaptive","display":"summarized"},
+			"output_config":{"effort":"max","format":{"type":"json_schema","schema":{"type":"object"}}}
+		}`),
+	}
+	supportsReasoning := true
+	prepared, err := client.Prepare(context.Background(), model.PrepareInput{
+		Context: modelcontext.Bundle{
+			Messages: []modelcontext.Message{anthropicTextMessage(modelprotocol.RoleUser, "hi")},
+		},
+		Policy: model.RequestPolicy{
+			MaxOutputTokens:   4096,
+			SupportsReasoning: &supportsReasoning,
+			ReasoningEffort:   "low",
+		},
+	})
+	if err != nil {
+		t.Fatalf("prepare: %v", err)
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(prepared.Body, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	for key, want := range map[string]string{
+		"metadata":      `{"user_id":"user-1"}`,
+		"top_k":         `5`,
+		"service_tier":  `"auto"`,
+		"thinking":      `{"type":"adaptive","display":"summarized"}`,
+		"output_config": `{"effort":"low","format":{"type":"json_schema","schema":{"type":"object"}}}`,
+	} {
+		if got := string(payload[key]); got != want {
+			t.Fatalf("%s = %s, want %s in %s", key, got, want, prepared.Body)
+		}
+	}
+}
+
+func TestPrepareRejectsNonObjectAPIVariantOutputConfigWithEffort(t *testing.T) {
+	client := Client{
+		EndpointPath:      testEndpointPath,
+		ProviderModelSlug: "claude-test",
+		APIVariantOptions: json.RawMessage(`{"output_config":"high"}`),
+	}
+	supportsReasoning := true
+	_, err := client.Prepare(context.Background(), model.PrepareInput{
+		Context: modelcontext.Bundle{
+			Messages: []modelcontext.Message{anthropicTextMessage(modelprotocol.RoleUser, "hi")},
+		},
+		Policy: model.RequestPolicy{
+			MaxOutputTokens:   64,
+			SupportsReasoning: &supportsReasoning,
+			ReasoningEffort:   "low",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "output_config") {
+		t.Fatalf("error = %v, want output_config object error", err)
 	}
 }
 

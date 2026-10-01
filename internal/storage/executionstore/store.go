@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/omnara-ai/omnara/internal/notifications"
+	"github.com/omnara-ai/omnara/internal/storage/artifactstore"
 	"github.com/omnara-ai/omnara/internal/storage/identitystore"
 	"github.com/omnara-ai/omnara/internal/storage/integrationstore"
 	"github.com/omnara-ai/omnara/internal/storage/internal/dbsqlc"
@@ -21,10 +22,11 @@ type Config struct {
 	MachinePoolProviders  MachinePoolProviders
 	Identity              *identitystore.Store
 	Secrets               *secretstore.Store
+	Artifacts             *artifactstore.Store
 }
 
 type Store struct {
-	pool                  *pgxpool.Pool
+	pool                  *storeutil.Pool
 	q                     *dbsqlc.Queries
 	postCommitPublisher   notifications.PostCommitPublisher
 	modelCallRetryBackoff func(int, string) time.Duration
@@ -32,18 +34,21 @@ type Store struct {
 	machinePoolProviders  MachinePoolProviders
 	identity              *identitystore.Store
 	secrets               *secretstore.Store
+	artifacts             *artifactstore.Store
 }
 
 func New(pool *pgxpool.Pool, config Config) *Store {
+	db := storeutil.WrapPool(pool)
 	return &Store{
-		pool:                  pool,
-		q:                     dbsqlc.New(pool),
+		pool:                  db,
+		q:                     dbsqlc.New(db),
 		postCommitPublisher:   config.PostCommitPublisher,
 		modelCallRetryBackoff: config.ModelCallRetryBackoff,
 		integrations:          config.Integrations,
 		machinePoolProviders:  config.MachinePoolProviders,
 		identity:              config.Identity,
 		secrets:               config.Secrets,
+		artifacts:             config.Artifacts,
 	}
 }
 
@@ -68,6 +73,9 @@ func (s *Store) commitTxWithNotifications(
 	txNotifications *notifications.TxNotifications,
 	operation string,
 ) error {
+	if err := enqueueEventWebhooksTx(ctx, tx, txNotifications); err != nil {
+		return err
+	}
 	var publisher notifications.PostCommitPublisher
 	if s != nil {
 		publisher = s.postCommitPublisher

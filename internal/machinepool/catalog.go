@@ -7,7 +7,9 @@ import (
 	"github.com/omnara-ai/omnara/internal/machinepool/providers"
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/blaxel"
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/daytona"
+	"github.com/omnara-ai/omnara/internal/machinepool/providers/freestyle"
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/modal"
+	"github.com/omnara-ai/omnara/internal/machinepool/providers/tenki"
 	"github.com/omnara-ai/omnara/internal/machinepool/providers/unikraft"
 	"github.com/omnara-ai/omnara/internal/storage/executionstore"
 )
@@ -21,10 +23,12 @@ type Catalog struct {
 func DefaultCatalog() Catalog {
 	return Catalog{
 		definitions: map[string]providers.Definition{
-			providers.Blaxel:   blaxel.Definition{},
-			providers.Daytona:  daytona.Definition{},
-			providers.Modal:    modal.Definition{},
-			providers.Unikraft: unikraft.Definition{},
+			providers.Blaxel:    blaxel.Definition{},
+			providers.Daytona:   daytona.Definition{},
+			providers.Freestyle: freestyle.Definition{},
+			providers.Modal:     modal.Definition{},
+			providers.Tenki:     tenki.Definition{},
+			providers.Unikraft:  unikraft.Definition{},
 		},
 	}
 }
@@ -76,4 +80,16 @@ func (c Catalog) BuildMachineProvisioningIntent(
 		)
 	}
 	return definition.BuildMachineProvisioningIntent(policy, machineProvisioning)
+}
+
+func (c Catalog) ConfigurableMachineResources(provider string) (executionstore.ConfigurableMachineResources, error) {
+	definition, ok := c.definition(provider)
+	if !ok {
+		return executionstore.ConfigurableMachineResources{}, fmt.Errorf("machine provider %q is not configured", provider)
+	}
+	policy := definition.ResourcePolicy()
+	return executionstore.ConfigurableMachineResources{
+		CPU:      policy.CPU.Provisioning == providers.MachineResourceConfigured,
+		MemoryMB: policy.MemoryMB.Provisioning == providers.MachineResourceConfigured,
+	}, nil
 }

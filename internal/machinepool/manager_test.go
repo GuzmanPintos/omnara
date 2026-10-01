@@ -367,6 +367,7 @@ func (p provisionRetryProvider) ProvisionMachine(
 	executionstore.MachineProvisioningConfig,
 	string,
 	map[string]string,
+	bool,
 ) (providers.ProvisionMachineResult, error) {
 	return p.provision()
 }
@@ -380,6 +381,10 @@ func (provisionRetryProvider) PrepareProvisioning(
 	executionstore.MachineProvisioningConfig,
 ) (executionstore.MachineResourceFacts, error) {
 	return executionstore.MachineResourceFacts{}, errors.New("not implemented")
+}
+
+func (provisionRetryProvider) ValidateMachineConfig(executionstore.MachineProvisioningConfig, map[string]string) error {
+	return nil
 }
 
 func (provisionRetryProvider) InspectMachine(
@@ -414,6 +419,7 @@ func provisionWithRetryForTest(
 		executionstore.MachineProvisioningConfig{},
 		"",
 		nil,
+		true,
 	)
 }
 
@@ -543,6 +549,28 @@ func TestProvisionMachineWithRetryDiscardsReplacedResource(t *testing.T) {
 	}
 	if result.ProviderResourceID != "resource-2" {
 		t.Fatalf("provision result = %+v, want replaced resource", result)
+	}
+}
+
+func TestProvisionMachineWithRetryStopsOnPermanentError(t *testing.T) {
+	stubProvisionRetryDelays(t)
+	calls := 0
+	result, err := provisionWithRetryForTest(
+		context.Background(),
+		func() (providers.ProvisionMachineResult, error) {
+			calls++
+			return providers.ProvisionMachineResult{ProviderResourceID: "resource-1"},
+				fmt.Errorf("snapshot too large: %w", providers.ErrPermanent)
+		},
+	)
+	if !errors.Is(err, providers.ErrPermanent) {
+		t.Fatalf("provision error = %v, want permanent error", err)
+	}
+	if calls != 1 {
+		t.Fatalf("provision calls = %d, want 1", calls)
+	}
+	if result.ProviderResourceID != "resource-1" {
+		t.Fatalf("provision result = %+v, want observed resource", result)
 	}
 }
 

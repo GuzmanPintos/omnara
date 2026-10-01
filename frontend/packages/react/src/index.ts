@@ -16,6 +16,13 @@ export {
   useAgentChat,
   type UseAgentChatResult,
 } from './domains/agent-chat'
+export { useAgentConfigTools } from './domains/agent-config-tools'
+export {
+  abbreviate,
+  agentEventPreview,
+  agentEventPreviewWidth,
+  blockText,
+} from './domains/agent-event-preview'
 export {
   type AgentInputBacklogItem,
   type AgentInputBacklogMove,
@@ -79,6 +86,7 @@ export {
 export {
   CREATED_RESOURCE_LIST_SORTS,
   DEFAULT_LIST_PAGE_SIZE,
+  exactNameGlob,
   type ListFilters,
   type ListSort,
   type PaginatedListOptions,
@@ -119,12 +127,14 @@ export {
   useServers,
 } from './domains/mcp-registry'
 export { useMcpServerTools } from './domains/mcp-server-tools'
-export { useMe } from './domains/me'
+export { useDeleteCurrentUser, useMe } from './domains/me'
 export {
   type ModelOption,
+  type ModelPricingLookup,
   type ModelProviderListFilters,
   type ModelProviderListOptions,
   type ModelProviderListSort,
+  useClusterModelPricing,
   useConfiguredModelOptions,
   useConfiguredModels,
   useCreateConfiguredModel,
@@ -159,6 +169,7 @@ export {
   type OrgMemberListOptions,
   type OrgMemberListSort,
   useCreateOrganization,
+  useDeleteOrganization,
   useDeleteOrgInvitation,
   useInviteMember,
   useOrgInvitations,
@@ -229,15 +240,26 @@ export {
   type SkillListOptions,
   type SkillListSort,
   type SkillOwnerScope,
-  useCreateSkill,
+  type SkillUpload,
+  useCreateSkills,
   useDeleteSkill,
   useDeleteSkillGrant,
   useGrantSkillToProject,
   useProjectAvailableSkills,
   useSkill,
   useSkillGrants,
+  useSkillNameLookup,
   useSkills,
   useUpdateSkill,
 } from './domains/skills'
 export { useToolCatalog } from './domains/tool-catalog'
+export {
+  type AgentProfileUsageFilters,
+  type OrgUsageFilters,
+  type UsageWindow,
+  useAgentProfileUsage,
+  useAgentUsage,
+  useOrgUsage,
+  useProjectUsage,
+} from './domains/usage'
 export { OmnaraClientProvider, useOmnaraClient } from './omnara-client'

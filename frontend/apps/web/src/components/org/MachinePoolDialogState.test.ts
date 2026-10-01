@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   derivedMemoryTotalCapPlaceholder,
   machinePoolCreateRequest,
+  machinePoolFormAfterProviderChange,
   machinePoolFormDefaults,
   machinePoolFormFromPool,
   machinePoolFormValid,
@@ -82,6 +83,42 @@ describe('machine pool names', () => {
   )
 })
 
+describe('Tenki machine pools', () => {
+  it('creates a base-image pool without provider options', () => {
+    const values = {
+      ...machinePoolFormDefaults,
+      provider: 'tenki' as const,
+      name: 'tenki-pool',
+      image: '',
+      secretId: 'sec_tenki',
+    }
+    expect(machinePoolFormValid(values)).toBe(true)
+    const request = machinePoolCreateRequest(values)
+    expect(request).toMatchObject({
+      provider: 'tenki',
+      default_machine_cpu: 1,
+      default_machine_memory_mb: 1024,
+    })
+    expect(request.default_machine_provider_options).toEqual({})
+  })
+
+  it('clears a custom image while preserving disk size when editing', () => {
+    const pool = machinePool({
+      provider: 'tenki',
+      default_machine_provider_options: { image: 'workspace/custom', disk_size_gb: 40 },
+    })
+    const values = machinePoolFormFromPool(pool)
+    if (!values) throw new Error('Expected Tenki pool form')
+    expect(values.location).toBe('')
+    const request = machinePoolUpdateRequest(pool, {
+      ...values,
+      image: '',
+      location: 'stale-region',
+    })
+    expect(request.default_machine_provider_options).toEqual({ disk_size_gb: 40 })
+  })
+})
+
 describe('Modal machine pools', () => {
   it.each(['agents', '', '  '])(
     'creates a pool with app %j and automatic region placement',
@@ -148,6 +185,89 @@ describe('Modal machine pools', () => {
       })
     },
   )
+})
+
+describe('Freestyle machine pools', () => {
+  it('creates a configured-size pool from a snapshot without a location option', () => {
+    const values = {
+      ...machinePoolFormDefaults,
+      provider: 'freestyle' as const,
+      name: 'freestyle-pool',
+      image: ' freestyle/ubuntu-sm ',
+      location: 'not-applicable',
+      cpu: '2',
+      memoryGb: '4',
+      secretId: 'sec_freestyle',
+      runtimeProtectionEnabled: true,
+    }
+
+    expect(machinePoolFormValid(values)).toBe(true)
+    expect(machinePoolCreateRequest(values)).toMatchObject({
+      provider: 'freestyle',
+      default_machine_provider_options: { snapshot: 'freestyle/ubuntu-sm' },
+      default_machine_cpu: 2,
+      default_machine_memory_mb: 4096,
+      max_total_cpu: 6,
+      max_total_memory_mb: 12288,
+      max_machine_cpu: 2,
+      max_machine_memory_mb: 4096,
+      runtime_protection_enabled: true,
+    })
+    expect(machinePoolCreateRequest(values).default_machine_provider_options).not.toHaveProperty(
+      'location',
+    )
+  })
+
+  it('defaults to the base snapshot size when switching to Freestyle', () => {
+    const values = machinePoolFormAfterProviderChange(machinePoolFormDefaults, 'freestyle')
+
+    expect(values).toMatchObject({
+      provider: 'freestyle',
+      location: '',
+      cpu: '2',
+      memoryGb: '4',
+    })
+  })
+
+  it('resets the Freestyle size default when switching to another provider', () => {
+    const freestyle = machinePoolFormAfterProviderChange(machinePoolFormDefaults, 'freestyle')
+
+    expect(machinePoolFormAfterProviderChange(freestyle, 'unikraft')).toMatchObject({
+      provider: 'unikraft',
+      cpu: machinePoolFormDefaults.cpu,
+      memoryGb: machinePoolFormDefaults.memoryGb,
+    })
+  })
+
+  it('preserves API-only provider options when editing a pool', () => {
+    const pool = machinePool({
+      provider: 'freestyle',
+      default_machine_cpu: 2,
+      default_machine_memory_mb: 4096,
+      default_machine_provider_options: {
+        snapshot: 'freestyle/ubuntu-sm',
+        sleep_after_ms: 60_000,
+      },
+      max_total_cpu: 6,
+      max_total_memory_mb: 12288,
+      max_machine_cpu: 2,
+      max_machine_memory_mb: 4096,
+    })
+    const values = machinePoolFormFromPool(pool)
+    if (values === null) throw new Error('expected Freestyle form values')
+
+    expect(values).toMatchObject({
+      provider: 'freestyle',
+      image: 'freestyle/ubuntu-sm',
+      location: '',
+      cpu: '2',
+      memoryGb: '4',
+    })
+    expect(
+      machinePoolUpdateRequest(pool, { ...values, image: 'team/configured-worker' })
+        .default_machine_provider_options,
+    ).toEqual({ snapshot: 'team/configured-worker', sleep_after_ms: 60_000 })
+  })
 })
 
 describe('machine pool edit state', () => {

@@ -396,6 +396,7 @@ func TestOpenAPINamePropertiesUseExplicitContracts(t *testing.T) {
 		"OrgMember.display_name":                         "",
 		"ToolCall.name":                                  "",
 		"ToolCatalogEntry.name":                          "",
+		"ResolvedAgentConfigTool.name":                   "",
 		"ToolPermissionMode.name":                        "",
 		"UpdateMachinePoolRequest.provider_config":       "",
 	}
@@ -857,6 +858,18 @@ func TestOpenAPIRequestValidatorEnforcesMachinePoolProviderShape(t *testing.T) {
 			want: http.StatusBadRequest,
 		},
 		{
+			name: "freestyle",
+			body: `{"provider":"freestyle",` + common +
+				`,"default_machine_cpu":1,"default_machine_memory_mb":1024,` +
+				`"max_total_cpu":4,"max_total_memory_mb":8192,"max_machine_cpu":2,"max_machine_memory_mb":4096}`,
+			want: http.StatusNoContent,
+		},
+		{
+			name: "freestyle missing cpu",
+			body: `{"provider":"freestyle",` + common + `}`,
+			want: http.StatusBadRequest,
+		},
+		{
 			name: "modal",
 			body: `{"provider":"modal",` + common +
 				`,"default_machine_cpu":1,"default_machine_memory_mb":1024,` +
@@ -867,6 +880,20 @@ func TestOpenAPIRequestValidatorEnforcesMachinePoolProviderShape(t *testing.T) {
 			name: "modal missing memory",
 			body: `{"provider":"modal",` + common +
 				`,"default_machine_cpu":1,"max_total_cpu":4,"max_total_memory_mb":8192,` +
+				`"max_machine_cpu":2,"max_machine_memory_mb":4096}`,
+			want: http.StatusBadRequest,
+		},
+		{
+			name: "tenki",
+			body: `{"provider":"tenki",` + common +
+				`,"default_machine_cpu":1,"default_machine_memory_mb":1024,` +
+				`"max_total_cpu":4,"max_total_memory_mb":8192,"max_machine_cpu":2,"max_machine_memory_mb":4096}`,
+			want: http.StatusNoContent,
+		},
+		{
+			name: "tenki missing cpu",
+			body: `{"provider":"tenki",` + common +
+				`,"default_machine_memory_mb":1024,"max_total_cpu":4,"max_total_memory_mb":8192,` +
 				`"max_machine_cpu":2,"max_machine_memory_mb":4096}`,
 			want: http.StatusBadRequest,
 		},

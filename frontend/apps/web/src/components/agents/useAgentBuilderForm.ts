@@ -8,10 +8,13 @@ import {
   type PoolEntry,
   type ToolEntry,
 } from '@/components/agents/agentConfigBasicExtract'
+import { eventWebhookUrlError, eventWebhookWire } from '@/components/agents/agentConfigEventWebhook'
 import {
   type BasicMcpServer,
   type BasicMcpTool,
   type McpAuthType,
+  mcpServerNamesUnique,
+  mcpServerValid,
   mcpWire,
   permissionWire,
 } from '@/components/agents/agentConfigMcp'
@@ -22,25 +25,38 @@ import {
   subagentWire,
 } from '@/components/agents/agentConfigSubagents'
 import type { BasicTool } from '@/components/agents/AgentConfigToolsField'
-import { addMachineToolsForNewSourceSelection } from '@/components/agents/builtInTools'
+import { useAgentBuilderTools } from '@/components/agents/useAgentBuilderTools'
+import {
+  overlayFromSecretRows,
+  overlayFromTextRows,
+  type SecretRow,
+  secretRowsValid,
+  type TextRow,
+  textRowsValid,
+} from '@/components/key-value/keyValueRows'
 import {
   emptyProviderOptions,
-  envOverlayFromRows,
-  type EnvOverlayRow,
-  envOverlayRowsValid,
   optionalIdleDeletionMinutesValid,
   optionalPositiveInt32Valid,
   type ProviderOptionsDraft,
   providerOptionsOverlay,
-  secretEnvOverlayFromRows,
-  type SecretEnvOverlayRow,
-  secretEnvOverlayRowsValid,
 } from '@/components/machines/machineOverrides'
 import { isMachinePoolProvider } from '@/components/org/machinePoolProviders'
 import { memoryGbDraftValid, memoryGbToMb } from '@/lib/machine-memory'
 import { normalizeResourceName, resourceNameValid } from '@/lib/resource-name'
 
 export { type BasicMcpServer, type BasicMcpTool, type McpAuthType }
+export {
+  mcpRuntimeToolName,
+  mcpRuntimeToolNameError,
+  mcpRuntimeToolNameMaxLength,
+  mcpServerNameError,
+  mcpServerNameMaxLength,
+  mcpToolEnabled,
+  mcpToolNameAddable,
+  type UnexposableMcpTool,
+  unexposableMcpTools,
+} from '@/components/agents/agentConfigMcp'
 
 export type MachineSourceKind = 'pool' | 'machine'
 
@@ -57,17 +73,21 @@ export interface BasicMachineSource {
   machineCpu: string
   machineMemoryGb: string
   providerOptions: ProviderOptionsDraft
-  envRows: EnvOverlayRow[]
-  secretEnvRows: SecretEnvOverlayRow[]
+  envRows: TextRow[]
+  secretEnvRows: SecretRow[]
 }
 
 export interface BasicConfig {
   instruction: string
   providerConfig: string
   modelName: string
+  reasoningEffort: string
   machineSources: BasicMachineSource[]
   tools: BasicTool[]
   mcpServers: BasicMcpServer[]
+  eventWebhookEvents: string[]
+  eventWebhookUrl: string
+  eventWebhookSigningSecretId: string
   skillIds: string[]
   subagents: BasicSubagent[]
   maxSubagents: string
@@ -97,9 +117,13 @@ export const emptyBasicConfig: BasicConfig = {
   instruction: '',
   providerConfig: '',
   modelName: '',
+  reasoningEffort: '',
   machineSources: [],
   tools: [],
   mcpServers: [],
+  eventWebhookEvents: ['tool_call_update'],
+  eventWebhookUrl: '',
+  eventWebhookSigningSecretId: '',
   skillIds: [],
   subagents: [],
   maxSubagents: '',
@@ -117,6 +141,7 @@ export function createBasicConfigSession(source: string): BasicConfigSession {
   return {
     initialDraft,
     apply(config) {
+      if (doc != null && initialDraft == null) return source
       return applyToDocument(doc?.clone() ?? new Document({}), source, initialDraft, config)
     },
   }
@@ -124,10 +149,15 @@ export function createBasicConfigSession(source: string): BasicConfigSession {
 
 export type AgentBuilderForm = ReturnType<typeof useAgentBuilderForm>
 
-export function useAgentBuilderForm(session: BasicConfigSession, seedConfig?: BasicConfig) {
+export function useAgentBuilderForm(
+  session: BasicConfigSession,
+  seedConfig: BasicConfig | undefined,
+  scope: { orgId: string; projectId: string },
+) {
   const [draft, setDraft] = useState<BasicConfig>(
     seedConfig ?? session.initialDraft ?? emptyBasicConfig,
   )
+  const tools = useAgentBuilderTools(draft, scope)
   const [unavailableSkillIds, setUnavailableSkillIds] = useState<string[]>([])
   const [unavailableSourceIds, setUnavailableSourceIds] = useState<string[]>([])
   const [modelUnavailable, setModelUnavailable] = useState(false)
@@ -146,15 +176,26 @@ export function useAgentBuilderForm(session: BasicConfigSession, seedConfig?: Ba
     draft,
     yaml: session.apply(draft),
     blocked,
+    resolvedTools: tools.data?.tools,
+    toolsPending: tools.isPending,
+    toolsError: tools.isError,
+    retryTools: () => void tools.refetch(),
     reset: (config: BasicConfig | null) => {
       setDraft(config ?? emptyBasicConfig)
     },
     instruction: draft.instruction,
-    model: { providerConfig: draft.providerConfig, modelName: draft.modelName },
+    model: {
+      providerConfig: draft.providerConfig,
+      modelName: draft.modelName,
+      reasoningEffort: draft.reasoningEffort,
+    },
     machineSources: draft.machineSources,
     tools: draft.tools,
     skillIds: draft.skillIds,
     mcpServers: draft.mcpServers,
+    eventWebhookEvents: draft.eventWebhookEvents,
+    eventWebhookUrl: draft.eventWebhookUrl,
+    eventWebhookSigningSecretId: draft.eventWebhookSigningSecretId,
     subagents: draft.subagents,
     maxSubagents: draft.maxSubagents,
     maxDepth: draft.maxDepth,
@@ -162,18 +203,14 @@ export function useAgentBuilderForm(session: BasicConfigSession, seedConfig?: Ba
       patch({ instruction })
     },
     setModel: (model: ModelSelection) => {
-      patch({ providerConfig: model.providerConfig, modelName: model.modelName })
+      patch({
+        providerConfig: model.providerConfig,
+        modelName: model.modelName,
+        reasoningEffort: model.reasoningEffort,
+      })
     },
     setMachineSources: (machineSources: BasicMachineSource[]) => {
-      setDraft((prev) => ({
-        ...prev,
-        machineSources,
-        tools: addMachineToolsForNewSourceSelection(
-          prev.machineSources,
-          machineSources,
-          prev.tools,
-        ),
-      }))
+      patch({ machineSources })
     },
     setTools: (tools: BasicTool[]) => {
       patch({ tools })
@@ -184,8 +221,26 @@ export function useAgentBuilderForm(session: BasicConfigSession, seedConfig?: Ba
     setMcpServers: (mcpServers: BasicMcpServer[]) => {
       patch({ mcpServers })
     },
+    setEventWebhookEvents: (eventWebhookEvents: string[]) => {
+      patch({ eventWebhookEvents })
+    },
+    setEventWebhookUrl: (eventWebhookUrl: string) => {
+      patch({ eventWebhookUrl })
+    },
+    setEventWebhookSigningSecretId: (eventWebhookSigningSecretId: string) => {
+      patch({ eventWebhookSigningSecretId })
+    },
     setSubagents: (subagents: BasicSubagent[]) => {
-      patch(subagents.length === 0 ? { subagents, maxSubagents: '', maxDepth: '' } : { subagents })
+      patch(
+        subagents.length === 0
+          ? {
+              subagents,
+              maxSubagents: '',
+              maxDepth: '',
+              tools: draft.tools.filter((tool) => tool.name !== 'spawn_agent'),
+            }
+          : { subagents },
+      )
     },
     setMaxSubagents: (maxSubagents: string) => {
       patch({ maxSubagents })
@@ -202,6 +257,8 @@ export function useAgentBuilderForm(session: BasicConfigSession, seedConfig?: Ba
 export function basicConfigValid(draft: BasicConfig) {
   return (
     draft.instruction.trim() !== '' &&
+    eventWebhookUrlError(draft.eventWebhookUrl) === undefined &&
+    (draft.eventWebhookUrl.trim() === '' || draft.eventWebhookEvents.length > 0) &&
     resourceNameValid(draft.providerConfig) &&
     resourceNameValid(draft.modelName) &&
     draft.machineSources.every(machineSourceValid) &&
@@ -220,8 +277,8 @@ function machineCountValid(value: string) {
 function machineSourceValid(source: BasicMachineSource) {
   return (
     resourceNameValid(source.name) &&
-    envOverlayRowsValid(source.envRows) &&
-    secretEnvOverlayRowsValid(source.secretEnvRows) &&
+    textRowsValid(source.envRows) &&
+    secretRowsValid(source.secretEnvRows) &&
     (source.kind === 'machine' ||
       (machineCountValid(source.initialNumMachines) &&
         machineCountValid(source.maxMachines) &&
@@ -229,88 +286,6 @@ function machineSourceValid(source: BasicMachineSource) {
         optionalPositiveInt32Valid(source.machineCpu) &&
         memoryGbDraftValid(source.machineMemoryGb, { optional: true })))
   )
-}
-
-export const mcpServerNameMaxLength = 32
-
-const mcpServerNamePattern = /^[a-zA-Z][a-zA-Z0-9-]{0,31}$/
-
-export function mcpServerNameError(name: string): string | undefined {
-  if (name === '') return 'Name is required.'
-  if (name.length > mcpServerNameMaxLength) {
-    return `Name cannot exceed ${mcpServerNameMaxLength} characters.`
-  }
-  if (!/^[a-zA-Z]/.test(name)) return 'Name must start with a letter.'
-  if (!mcpServerNamePattern.test(name)) {
-    return 'Name may only contain letters, numbers, and hyphens.'
-  }
-  return undefined
-}
-
-export const mcpRuntimeToolNameMaxLength = 64
-
-export function mcpRuntimeToolName(serverName: string, toolName: string) {
-  return `mcp__${serverName}__${toolName}`
-}
-
-export function mcpToolEnabled(server: BasicMcpServer, toolName: string) {
-  return server.tools.find((tool) => tool.name === toolName)?.enabled ?? server.defaultEnabled
-}
-
-const mcpToolNamePattern = /^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/
-
-export function mcpToolNameAddable(toolName: string) {
-  return mcpToolNamePattern.test(toolName)
-}
-
-export function mcpRuntimeToolNameError(serverName: string, toolName: string): string | undefined {
-  if (toolName === '') return 'Tool name is required.'
-  if (!/^[a-zA-Z]/.test(toolName)) {
-    return `"${toolName}" must start with a letter, but the model only accepts tool names that begin with a letter.`
-  }
-  if (!/^[a-zA-Z0-9_-]*$/.test(toolName)) {
-    return `"${toolName}" contains characters other than letters, numbers, underscores, and hyphens, which the model does not accept in tool names.`
-  }
-  const runtimeName = mcpRuntimeToolName(serverName, toolName)
-  if (runtimeName.length <= mcpRuntimeToolNameMaxLength) return undefined
-  const maxServerNameLength = mcpRuntimeToolNameMaxLength - mcpRuntimeToolName('', toolName).length
-  const prefixed = `"${toolName}" becomes "${runtimeName}" (${runtimeName.length} characters) once the server name is prefixed, but the model only accepts tool names of ${mcpRuntimeToolNameMaxLength} characters or fewer.`
-  return maxServerNameLength >= 1
-    ? `${prefixed} Shorten the server name to ${maxServerNameLength} characters or fewer.`
-    : `${prefixed} The tool name itself is too long to expose under any server name.`
-}
-
-export interface UnexposableMcpTool {
-  name: string
-  error: string
-}
-
-export function unexposableMcpTools(
-  server: BasicMcpServer,
-  discoveredNames: string[],
-): UnexposableMcpTool[] {
-  const names = new Set([...discoveredNames, ...server.tools.map((tool) => tool.name)])
-  return [...names].flatMap((name) => {
-    if (!mcpToolEnabled(server, name)) return []
-    const error = mcpRuntimeToolNameError(server.name, name)
-    return error === undefined ? [] : [{ name, error }]
-  })
-}
-
-function mcpServerValid(server: BasicMcpServer) {
-  return (
-    mcpServerNameError(server.name) === undefined &&
-    server.url.trim() !== '' &&
-    (server.authType === 'none' ||
-      (server.secretId.trim() !== '' &&
-        (server.authType !== 'sigv4' ||
-          (server.service.trim() !== '' && server.region.trim() !== ''))))
-  )
-}
-
-function mcpServerNamesUnique(servers: BasicMcpServer[]) {
-  const names = servers.map((server) => server.name)
-  return new Set(names).size === names.length
 }
 
 function parseSourceDocument(source: string): Document | null {
@@ -364,6 +339,11 @@ function applyToDocument(
   const modelName = normalizeResourceName(config.modelName)
   if (modelName !== normalizeResourceName(baseline?.modelName ?? ''))
     set(['model', 'name'], modelName)
+  const reasoningEffort = config.reasoningEffort.trim()
+  if (reasoningEffort !== (baseline?.reasoningEffort ?? '')) {
+    if (reasoningEffort === '') del(['model', 'reasoning'])
+    else set(['model', 'reasoning', 'effort'], reasoningEffort)
+  }
 
   applyMachineSources(doc, config.machineSources, baseline?.machineSources ?? null, set, del)
   applyNamedEntries(
@@ -398,6 +378,12 @@ function applyToDocument(
     set,
     del,
   )
+
+  const eventWebhook = eventWebhookWire(config)
+  if (!deepEqual(eventWebhook, baseline ? eventWebhookWire(baseline) : null)) {
+    if (eventWebhook) set(['event_webhook'], eventWebhook)
+    else del(['event_webhook'])
+  }
 
   return edits.count > 0 ? doc.toString() : baselineSource
 }
@@ -469,8 +455,8 @@ function machineSourceComparable(source: BasicMachineSource) {
     machineCpu: source.machineCpu,
     machineMemoryGb: source.machineMemoryGb,
     providerOptions: { ...source.providerOptions },
-    env: envOverlayFromRows(source.envRows) ?? null,
-    secretEnv: secretEnvOverlayFromRows(source.secretEnvRows) ?? null,
+    env: overlayFromTextRows(source.envRows) ?? null,
+    secretEnv: overlayFromSecretRows(source.secretEnvRows) ?? null,
   }
 }
 
@@ -518,14 +504,16 @@ function machineSourceWire(source: BasicMachineSource): PoolEntry | MachineEntry
 
 function applySourceOverlays(wire: PoolEntry | MachineEntry, source: BasicMachineSource) {
   if (source.defaultCwd.trim() !== '') wire.cwd = source.defaultCwd.trim()
-  const envOverlay = envOverlayFromRows(source.envRows)
+  const envOverlay = overlayFromTextRows(source.envRows)
   if (envOverlay) wire.env_overlay = envOverlay
-  const secretEnvOverlay = secretEnvOverlayFromRows(source.secretEnvRows)
+  const secretEnvOverlay = overlayFromSecretRows(source.secretEnvRows)
   if (secretEnvOverlay) wire.secret_env_overlay = secretEnvOverlay
 }
 
-function toolWire(tool: BasicTool): ToolEntry {
+export function toolWire(tool: BasicTool): ToolEntry {
   const wire: ToolEntry = { type: 'built_in' }
+  if (tool.enabled === false) wire.enabled = false
   if (tool.permission != null) wire.permission = permissionWire(tool.permission)
+  if (tool.deferred) wire.deferred = true
   return wire
 }

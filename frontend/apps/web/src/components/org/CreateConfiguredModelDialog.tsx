@@ -40,11 +40,13 @@ export function CreateConfiguredModelDialog({
   onOpenChange,
   orgId,
   providers,
+  defaultProviderId,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   orgId: string
   providers: ModelProviderConfig[]
+  defaultProviderId?: string
 }) {
   const createConfiguredModel = useCreateConfiguredModel(orgId)
   const createProjectModelGrant = useCreateProjectModelGrant(orgId)
@@ -56,7 +58,7 @@ export function CreateConfiguredModelDialog({
     error: '',
   })
   const form = useForm({
-    defaultValues: configuredModelFormDefaults,
+    defaultValues: { ...configuredModelFormDefaults, providerId: defaultProviderId ?? '' },
     onSubmit: async ({ value }) => {
       const provider = providers.find((item) => item.id === value.providerId) ?? providers[0]
       if (phase.kind === 'form' && !configuredModelFormValid(value, provider)) {
@@ -174,7 +176,7 @@ export function CreateConfiguredModelDialog({
                     id="cm-name"
                     required
                     value={field.state.value}
-                    placeholder="gpt-5.5"
+                    placeholder="gpt-6-sol"
                     onChange={(event) => {
                       field.handleChange(event.target.value)
                     }}

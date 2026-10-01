@@ -21,7 +21,6 @@ import (
 	"github.com/omnara-ai/omnara/internal/authn"
 	"github.com/omnara-ai/omnara/internal/bearertoken"
 	"github.com/omnara-ai/omnara/internal/modelprotocol"
-	"github.com/omnara-ai/omnara/internal/publicid"
 	"github.com/omnara-ai/omnara/internal/resourcemeta"
 	"github.com/omnara-ai/omnara/internal/resourcename"
 	"github.com/omnara-ai/omnara/internal/secrets"
@@ -38,6 +37,7 @@ import (
 	"github.com/omnara-ai/omnara/internal/storage/storeerr"
 	"github.com/omnara-ai/omnara/internal/testutil/integrationblob"
 	"github.com/omnara-ai/omnara/internal/testutil/integrationdb"
+	"github.com/stretchr/testify/require"
 )
 
 const testDeviceOAuthClientID = "test-device-client"
@@ -535,7 +535,7 @@ func TestCreateOrgForUserRejectsDefaultPoolSecretEnv(t *testing.T) {
 	pool := openIntegrationDB(t, ctx)
 	store := newIntegrationStore(pool, WithMachinePoolProviders(mergingMachinePoolProviders{}))
 	user := mustCreateIdentityUser(t, ctx, store, "default-pool-secret@example.com", "Cluster Pool Secret")
-	missingSecretID := secretPublicIDForTest(t, testID("default-pool-missing-secret"))
+	missingSecretID := testID("default-pool-missing-secret").String()
 	_, err := store.Organizations().CreateOrgForUser(
 		ctx,
 		orglifecycle.CreateOrgForUserInput{
@@ -839,10 +839,6 @@ func TestDefaultModelProviderProvisioningCreatesClusterManagedResourcesAtomicall
 	); !errors.Is(err, storeerr.ErrNotFound) {
 		t.Fatalf("tenant machine pool with cluster credential error = %v, want not found", err)
 	}
-	credentialPublicID, err := publicid.Encode(publicid.KindSecret, credential.ID)
-	if err != nil {
-		t.Fatalf("encode cluster credential id: %v", err)
-	}
 	tenantCredential, _, err := store.Secrets().CreateSecret(ctx, secretstore.CreateSecretInput{
 		OrgID:     created.Org.ID,
 		OwnerKind: secretstore.SecretOwnerOrg,
@@ -860,11 +856,21 @@ func TestDefaultModelProviderProvisioningCreatesClusterManagedResourcesAtomicall
 			Name:                    "tenant-pool-with-cluster-env-secret",
 			Provider:                "unikraft",
 			ProviderAuthSecretID:    tenantCredential.ID,
-			DefaultMachineSecretEnv: mustTestRawJSON(t, map[string]string{"OPENROUTER_API_KEY": credentialPublicID}),
+			DefaultMachineSecretEnv: mustTestRawJSON(t, map[string]string{"OPENROUTER_API_KEY": credential.ID.String()}),
 			MaxTotalMachines:        1,
 		}),
 	); !errors.Is(err, storeerr.ErrNotFound) {
 		t.Fatalf("tenant machine environment with cluster credential error = %v, want not found", err)
+	}
+	if _, err := store.Models().CreateModelProviderConfig(ctx, modelstore.CreateModelProviderConfigInput{
+		OrgID:              created.Org.ID,
+		Name:               "tenant-provider-with-cluster-header-secret",
+		APIFormat:          modelprotocol.APIFormatOpenAIResponses,
+		BaseURL:            "https://api.openai.com/v1",
+		CredentialSecretID: tenantCredential.ID,
+		SecretHeaders:      mustTestRawJSON(t, map[string]string{"X-Gateway-Key": credential.ID.String()}),
+	}); !errors.Is(err, storeerr.ErrInvalidSecretRequest) {
+		t.Fatalf("tenant provider with cluster header secret error = %v, want invalid secret request", err)
 	}
 	payload, err := store.Secrets().ReadOrgOwnedSecretPayload(ctx, secretstore.ReadOrgOwnedSecretPayloadInput{
 		OrgID:          created.Org.ID,
@@ -7673,4 +7679,28 @@ func assertErrorResultBlocked(t *testing.T, name string, ch <-chan error) {
 		t.Fatalf("%s completed while user row lock was held: %v", name, err)
 	default:
 	}
+}
+
+func TestStorageQueryErrorPreservesPostgresCause(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	pool := openIntegrationDB(t, ctx)
+	_, err := pool.Exec(ctx, "CREATE UNIQUE INDEX test_users_display_name_key ON users (display_name)")
+	require.NoError(t, err)
+	store := NewStore(pool)
+	input := identitystore.CreateUserInput{DisplayName: "customer_content"}
+	_, err = store.Identity().CreateUser(ctx, input)
+	require.NoError(t, err)
+	_, err = store.Identity().CreateUser(ctx, input)
+	var queryErr *storeerr.QueryError
+	require.ErrorAs(t, err, &queryErr)
+	require.Equal(t, "CreateUser", queryErr.Query)
+	require.Equal(t, "23505", queryErr.SQLState)
+	require.Equal(t, "test_users_display_name_key", queryErr.Constraint)
+	require.True(t, storeutil.IsUniqueViolationOnConstraint(err, queryErr.Constraint))
+	require.NotContains(t, err.Error(), "customer_content")
+	require.NotContains(t, err.Error(), "duplicate key")
+	var pgErr *pgconn.PgError
+	require.ErrorAs(t, err, &pgErr)
+	require.Contains(t, pgErr.Detail, "customer_content")
 }

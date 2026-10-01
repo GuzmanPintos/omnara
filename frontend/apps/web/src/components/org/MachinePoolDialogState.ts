@@ -1,20 +1,22 @@
 import type { CreateMachinePoolRequest, MachinePool, UpdateMachinePoolRequest } from '@omnara/sdk'
 
 import {
-  envFromRows,
-  type EnvOverlayRow,
-  envOverlayRowsValid,
-  newEnvOverlayRow,
-  newSecretEnvOverlayRow,
+  recordFromSecretRows,
+  recordFromTextRows,
+  type SecretRow,
+  secretRowsFromRecord,
+  secretRowsValid,
+  type TextRow,
+  textRowsFromRecord,
+  textRowsValid,
+} from '@/components/key-value/keyValueRows'
+import {
   numberDraft,
   optionalInt,
   optionalIntOrNull,
   optionalNonNegativeInt32Valid,
   optionalPoolIdleDeletionMinutesValid,
   optionalPositiveInt32Valid,
-  secretEnvFromRows,
-  type SecretEnvOverlayRow,
-  secretEnvOverlayRowsValid,
   stringOrUndefined,
 } from '@/components/machines/machineOverrides'
 import {
@@ -28,6 +30,7 @@ import { resourceNameValid } from '@/lib/resource-name'
 
 import {
   isMachinePoolProvider,
+  machinePoolCoreProviderOptions,
   type MachinePoolProvider,
   machinePoolProviderDefinitions,
 } from './machinePoolProviders'
@@ -49,8 +52,8 @@ export interface MachinePoolFormValues {
   location: string
   startupScript: string
   cwd: string
-  envRows: EnvOverlayRow[]
-  secretEnvRows: SecretEnvOverlayRow[]
+  envRows: TextRow[]
+  secretEnvRows: SecretRow[]
   cpu: string
   memoryGb: string
   maxMachines: string
@@ -76,7 +79,7 @@ export const machinePoolFormDefaults: MachinePoolFormValues = {
   provider: 'blaxel',
   providerScope: '',
   image: '',
-  location: machinePoolProviderDefinitions.blaxel.location.defaultValue,
+  location: machinePoolProviderDefinitions.blaxel.location?.defaultValue ?? '',
   startupScript: '',
   cwd: '',
   envRows: [],
@@ -144,15 +147,19 @@ export function machinePoolFormAfterProviderChange(
     provider,
     providerScope: '',
     image: '',
-    location: nextDefinition.location.defaultValue,
+    location: nextDefinition.location?.defaultValue ?? '',
     cpu:
-      currentDefinition.resources.cpu === nextDefinition.resources.cpu
+      nextDefinition.resources.defaultCpu ??
+      (currentDefinition.resources.cpu === nextDefinition.resources.cpu &&
+      currentDefinition.resources.defaultCpu === undefined
         ? values.cpu
-        : machinePoolFormDefaults.cpu,
+        : machinePoolFormDefaults.cpu),
     memoryGb:
-      currentDefinition.resources.memoryMb === nextDefinition.resources.memoryMb
+      nextDefinition.resources.defaultMemoryGb ??
+      (currentDefinition.resources.memoryMb === nextDefinition.resources.memoryMb &&
+      currentDefinition.resources.defaultMemoryGb === undefined
         ? values.memoryGb
-        : machinePoolFormDefaults.memoryGb,
+        : machinePoolFormDefaults.memoryGb),
     maxTotalCpu: '',
     maxTotalMemoryGb: '',
     minMachineCpu: '',
@@ -187,15 +194,15 @@ export function machinePoolFormValid(
   return (
     (clusterEdit ||
       (resourceNameValid(values.name) &&
-        values.image.trim() !== '' &&
-        (!provider.location.required || values.location.trim() !== '') &&
+        (provider.resource.optional === true || values.image.trim() !== '') &&
+        (!provider.location?.required || values.location.trim() !== '') &&
         (!provider.scope?.required || values.providerScope.trim() !== '') &&
         values.secretId !== '')) &&
     maxMachinesValid &&
     cpuValid &&
     memoryValid &&
-    envOverlayRowsValid(values.envRows) &&
-    secretEnvOverlayRowsValid(values.secretEnvRows) &&
+    textRowsValid(values.envRows) &&
+    secretRowsValid(values.secretEnvRows) &&
     optionalPositiveInt32Valid(values.maxMachineCpu) &&
     optionalPoolIdleDeletionMinutesValid(values.deleteAfterIdleMinutes) &&
     memoryGbDraftValid(values.maxMachineMemoryGb, { optional: true }) &&
@@ -216,8 +223,8 @@ export function machinePoolCreateRequest(values: MachinePoolFormValues): CreateM
     description: stringOrUndefined(values.description),
     provider_auth_secret_id: values.secretId,
     max_total_machines: maxMachines,
-    default_machine_env: envFromRows(values.envRows),
-    default_machine_secret_env: secretEnvFromRows(values.secretEnvRows),
+    default_machine_env: recordFromTextRows(values.envRows),
+    default_machine_secret_env: recordFromSecretRows(values.secretEnvRows),
     default_cwd: stringOrUndefined(values.cwd),
     runtime_protection_enabled: values.runtimeProtectionEnabled,
     delete_after_idle_minutes: optionalInt(values.deleteAfterIdleMinutes),
@@ -226,7 +233,9 @@ export function machinePoolCreateRequest(values: MachinePoolFormValues): CreateM
     values.startupScript.trim() === '' ? {} : { startup_script: values.startupScript }
   switch (values.provider) {
     case 'unikraft':
+    case 'freestyle':
     case 'modal':
+    case 'tenki':
       return {
         ...common,
         provider: values.provider,
@@ -235,12 +244,7 @@ export function machinePoolCreateRequest(values: MachinePoolFormValues): CreateM
         default_machine_cpu: cpu,
         default_machine_memory_mb: memoryMb,
         default_machine_provider_options: {
-          image: values.image.trim(),
-          ...(values.provider === 'unikraft'
-            ? { metro: values.location.trim() }
-            : values.location.trim() === ''
-              ? {}
-              : { region: values.location.trim() }),
+          ...machinePoolCoreProviderOptions(values.provider, values.image, values.location),
           ...startupScript,
         },
         max_total_cpu: optionalInt(values.maxTotalCpu) ?? cpu * maxMachines,
@@ -256,8 +260,7 @@ export function machinePoolCreateRequest(values: MachinePoolFormValues): CreateM
         provider: 'blaxel',
         default_machine_memory_mb: memoryMb,
         default_machine_provider_options: {
-          image: values.image.trim(),
-          region: values.location.trim(),
+          ...machinePoolCoreProviderOptions(values.provider, values.image, values.location),
           ...startupScript,
         },
         provider_config: { workspace: values.providerScope.trim() },
@@ -270,8 +273,7 @@ export function machinePoolCreateRequest(values: MachinePoolFormValues): CreateM
         ...common,
         provider: 'daytona',
         default_machine_provider_options: {
-          snapshot: values.image.trim(),
-          target: values.location.trim(),
+          ...machinePoolCoreProviderOptions(values.provider, values.image, values.location),
           ...startupScript,
         },
         max_total_cpu: optionalInt(values.maxTotalCpu) ?? cpu * maxMachines,
@@ -306,11 +308,11 @@ export function machinePoolFormFromPool(pool: MachinePool): MachinePoolFormValue
         ? providerOptionStrings(pool.provider_config)[definition.scope.key]
         : undefined) ?? '',
     image: options[definition.resource.key] ?? '',
-    location: options[definition.location.key] ?? '',
+    location: definition.location ? (options[definition.location.key] ?? '') : '',
     startupScript: options.startup_script ?? '',
     cwd: pool.default_cwd,
-    envRows: envRowsFromRecord(pool.default_machine_env),
-    secretEnvRows: secretEnvRowsFromRecord(pool.default_machine_secret_env),
+    envRows: textRowsFromRecord(pool.default_machine_env),
+    secretEnvRows: secretRowsFromRecord(pool.default_machine_secret_env),
     cpu: numberDraft(cpuValue) || machinePoolFormDefaults.cpu,
     memoryGb: memoryGbDraft(memoryValue) || machinePoolFormDefaults.memoryGb,
     maxMachines: numberDraft(pool.max_total_machines),
@@ -338,18 +340,17 @@ export function machinePoolUpdateRequest(
   if (pool.provider !== values.provider) throw new Error('machine pool provider cannot be changed')
   if (pool.management_kind === 'cluster') return clusterMachinePoolUpdateRequest(pool, values)
   const definition = machinePoolProviderDefinitions[values.provider]
-  const editableOptionKeys = new Set([
-    definition.resource.key,
-    definition.location.key,
-    'startup_script',
-  ])
+  const editableOptionKeys = new Set([definition.resource.key, 'startup_script'])
+  if (definition.location) editableOptionKeys.add(definition.location.key)
   const defaultMachineProviderOptions = Object.fromEntries(
     Object.entries(pool.default_machine_provider_options).filter(
       ([key]) => !editableOptionKeys.has(key),
     ),
   )
-  defaultMachineProviderOptions[definition.resource.key] = values.image.trim()
-  if (values.location.trim() !== '') {
+  if (values.image.trim() !== '') {
+    defaultMachineProviderOptions[definition.resource.key] = values.image.trim()
+  }
+  if (definition.location && values.location.trim() !== '') {
     defaultMachineProviderOptions[definition.location.key] = values.location.trim()
   }
   if (values.startupScript.trim() !== '') {
@@ -365,8 +366,8 @@ export function machinePoolUpdateRequest(
   const common = {
     name: values.name,
     description: values.description.trim(),
-    default_machine_env: envFromRows(values.envRows) ?? {},
-    default_machine_secret_env: secretEnvFromRows(values.secretEnvRows) ?? {},
+    default_machine_env: recordFromTextRows(values.envRows) ?? {},
+    default_machine_secret_env: recordFromSecretRows(values.secretEnvRows) ?? {},
     default_machine_provider_options: defaultMachineProviderOptions,
     default_cwd: values.cwd.trim(),
     provider_auth_secret_id: values.secretId,
@@ -376,7 +377,9 @@ export function machinePoolUpdateRequest(
   }
   switch (values.provider) {
     case 'unikraft':
+    case 'freestyle':
     case 'modal':
+    case 'tenki':
       return {
         ...common,
         provider_config:
@@ -453,8 +456,8 @@ function clusterMachinePoolUpdateRequest(
       : pool.default_machine_memory_mb
   const memoryMb = memoryMbFromDraft(values.memoryGb, originalMemoryMb)
   const common = {
-    default_machine_env: envFromRows(values.envRows) ?? {},
-    default_machine_secret_env: secretEnvFromRows(values.secretEnvRows) ?? {},
+    default_machine_env: recordFromTextRows(values.envRows) ?? {},
+    default_machine_secret_env: recordFromSecretRows(values.secretEnvRows) ?? {},
     delete_after_idle_minutes: optionalIntOrNull(values.deleteAfterIdleMinutes),
     min_machine_memory_mb: optionalMemoryMbOrNull(
       values.minMachineMemoryGb,
@@ -463,7 +466,9 @@ function clusterMachinePoolUpdateRequest(
   }
   switch (values.provider) {
     case 'unikraft':
+    case 'freestyle':
     case 'modal':
+    case 'tenki':
       return {
         ...common,
         default_machine_cpu: cpu,
@@ -494,18 +499,6 @@ function clusterMachinePoolUpdateRequest(
         max_machine_memory_mb: memoryMb,
       }
   }
-}
-
-function envRowsFromRecord(values: Record<string, string>): EnvOverlayRow[] {
-  return Object.entries(values)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => ({ ...newEnvOverlayRow(), key, value }))
-}
-
-function secretEnvRowsFromRecord(values: Record<string, string>): SecretEnvOverlayRow[] {
-  return Object.entries(values)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, secretId]) => ({ ...newSecretEnvOverlayRow(), key, secretId }))
 }
 
 function memoryMbFromDraft(value: string, originalMemoryMb: number | null) {

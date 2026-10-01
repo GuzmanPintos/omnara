@@ -1650,6 +1650,13 @@ func (*runtimeReconciliationTestProvider) PrepareProvisioning(
 	return executionstore.MachineResourceFacts{}, errors.New("not implemented by runtime test provider")
 }
 
+func (*runtimeReconciliationTestProvider) ValidateMachineConfig(
+	executionstore.MachineProvisioningConfig,
+	map[string]string,
+) error {
+	return nil
+}
+
 func (*runtimeReconciliationTestProvider) ProvisionMachine(
 	context.Context,
 	uuid.UUID,
@@ -1657,6 +1664,7 @@ func (*runtimeReconciliationTestProvider) ProvisionMachine(
 	executionstore.MachineProvisioningConfig,
 	string,
 	map[string]string,
+	bool,
 ) (providers.ProvisionMachineResult, error) {
 	return providers.ProvisionMachineResult{}, errors.New("not implemented by runtime test provider")
 }
@@ -1787,3 +1795,7 @@ func (p *runtimeReconciliationTestProvider) singleCallCount() int {
 
 var _ providers.RuntimeStateObserver = (*runtimeReconciliationTestProvider)(nil)
 var _ providers.MachineWaker = (*runtimeReconciliationTestProvider)(nil)
+
+func (*runtimeReconciliationTestDefinition) ResourcePolicy() providers.MachineResourcePolicy {
+	return providers.MachineResourcePolicy{}
+}
